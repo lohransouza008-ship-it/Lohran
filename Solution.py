@@ -1,35 +1,52 @@
-import datetime
 import requests
+import folium
+from folium.plugins import MarkerCluster
 
-def cotar():
-    lista = []
-    hoje = datetime.date.today()
+TOKEN = 9f4d1f2f53b5f131e2552c848ac28a13302a36f3f73cbe57153b381d928bf589
+BASE = "http://api.olhovivo.sptrans.com.br/v2.1"
+LINHA = "8000-10" # DIFERENTE do slide que é 175T-10
 
-    # de 364 dias atrás até hoje = 365 dias
-    for i in range(364, -1, -1):
-        data = hoje - datetime.timedelta(days=i)
-        data_str = data.strftime("%m-%d-%Y") # formato que o BC espera
+session = requests.Session()
 
-        url = f"https://olinda.bcb.gov.br/olinda/servico/PTAX/versao/v1/odata/CotacaoDolarDia(dataCotacao=@dataCotacao)?@dataCotacao='{data_str}'&$top=1&$format=json"
+def autenticar():
+    url = f"{BASE}/Login/Autenticar?token={TOKEN}"
+    r = session.post(url)
+    return r.text == "true"
 
-        try:
-            resp = requests.get(url, timeout=10)
-            dados = resp.json()
+def solution():
+    # 1. Autentica
+    autenticar()
 
-            if dados.get('value'):
-                # pegou cotação do dia
-                cotacao = dados['value'][0]['cotacaoCompra']
-            else:
-                # sem cotação (fds/feriado) - repete a última
-                cotacao = lista[-1] if lista else 0
-        except:
-            # se der erro de rede, repete a última também
-            cotacao = lista[-1] if lista else 0
+    # 2. Busca linha
+    linha = session.get(f"{BASE}/Linha/Buscar?termosBusca={LINHA}").json()[0]
+    codigo = linha['cl']
+    print(f"Linha encontrada: {linha['lt']}")
 
-        lista.append(cotacao)
+    # 3. Busca paradas
+    paradas = session.get(f"{BASE}/Parada/BuscarParadasPorLinha?codigoLinha={codigo}").json()
 
-    return lista
+    # 4. Posição em tempo real
+    pos = session.get(f"{BASE}/Posicao?codigoLinha={codigo}").json()
+    onibus = pos.get('vs', [])
 
-# pra testar local:
-if __name__ == "__main__":
-    print(cotar())
+    # 5. Cria mapa - REQUISITO PRINCIPAL
+    lat = sum(p['py'] for p in paradas) / len(paradas)
+    lon = sum(p['px'] for p in paradas) / len(paradas)
+    mapa = folium.Map(location=[lat, lon], zoom_start=13)
+
+    cluster = MarkerCluster().add_to(mapa)
+    for p in paradas:
+        # PIN AZUL PARA PARADA
+        folium.Marker([p['py'], p['px']], popup=p['np'],
+                      icon=folium.Icon(color='blue', icon='info-sign')).add_to(cluster)
+
+    for o in onibus:
+        # PIN VERMELHO PARA ÔNIBUS - cor diferente
+        folium.Marker([o['py'], o['px']], popup=f"Ônibus {o['p']}",
+                      icon=folium.Icon(color='red', icon='bus', prefix='fa')).add_to(mapa)
+
+    mapa.save("mapa_frota_8000_10.html")
+    print(f"Mapa criado com {len(paradas)} paradas e {len(onibus)} ônibus")
+
+if _name_ == "_main_":
+    solution()
